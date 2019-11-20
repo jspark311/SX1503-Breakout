@@ -1,0 +1,31 @@
+#########################################
+# Syntax Coloring Map For Arduino-SX1503
+#########################################
+
+#########################################
+# Datatypes (KEYWORD1)
+#########################################
+
+SX1503            KEYWORD1
+SX1503Callback    KEYWORD1
+
+#########################################
+# Methods and Functions (KEYWORD2)
+#########################################
+
+init               KEYWORD2
+reset              KEYWORD2
+poll           KEYWORD2
+gpioMode           KEYWORD2
+preserveOnDestroy  KEYWORD2
+useBoost           KEYWORD2
+setPLD             KEYWORD2
+serializeSettings  KEYWORD2
+printDebug         KEYWORD2
+printRegs          KEYWORD2
+
+#########################################
+# Constants (LITERAL1)
+#########################################
+
+SX1503_SERIALIZE_VERSION  LITERAL1
