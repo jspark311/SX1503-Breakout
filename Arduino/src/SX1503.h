@@ -5,7 +5,7 @@
 #define __SX1503_DRIVER_H__
 
 #include <Arduino.h>
-#include "StringBuilder.h"
+
 
 #define SX1503_SERIALIZE_VERSION  0x01  // Version code for serialized states.
 #define SX1503_I2C_ADDR           0x20  // Not configurable.
@@ -70,6 +70,8 @@ class SX1503 {
     int8_t init(uint8_t* buffer, uint8_t len);  // Takes serialized state as argument.
     int8_t reset();
     int8_t poll();
+    bool isrFired();
+    int8_t refresh();
 
     // Basic usage as pins...
     int8_t  gpioMode(uint8_t pin, int mode);
@@ -89,13 +91,14 @@ class SX1503 {
     uint8_t serializeSettings(uint8_t* buffer);
 
     // Debugging fxns...
-    void printDebug(StringBuilder*);
-    void printRegs(StringBuilder*);
+    void printDebug();
+    void printRegs();
 
 
   private:
     const uint8_t  _IRQ_PIN;
     const uint8_t  _RESET_PIN;
+    uint16_t       _flags = 0;
     uint8_t        priorities[16];
     SX1503Callback callbacks[16];
     uint8_t        registers[31];
@@ -104,8 +107,6 @@ class SX1503 {
 
     int8_t  _write_register(uint8_t reg, uint8_t val);
     int8_t  _read_register(uint8_t reg, uint8_t len);
-    void    _set_shadow_value(uint8_t reg, uint8_t val);
-    uint8_t _get_shadow_value(uint8_t reg);
     int8_t  _ll_pin_init();
 };
 

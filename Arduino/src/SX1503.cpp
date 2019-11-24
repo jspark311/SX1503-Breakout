@@ -49,7 +49,7 @@ SX1503::SX1503(const uint8_t irq_pin, const uint8_t reset_pin) : _IRQ_PIN(irq_pi
   for (uint8_t i = 0; i < sizeof(registers); i++) {
     registers[i] = 0;
   }
-  for (uint8_t i = 0; i < sizeof(callbacks); i++) {
+  for (uint8_t i = 0; i < 16; i++) {
     callbacks[i]  = nullptr;
     priorities[i] = 0;
   }
@@ -60,21 +60,31 @@ SX1503::~SX1503() {
 }
 
 
+bool SX1503::isrFired() {
+  return (255 != _IRQ_PIN) ? isr_fired : true;
+}
+
 
 /*
 * Dump this item to the dev log.
 */
-void SX1503::printDebug(StringBuilder* output) {
-  output->concat("---< SX1503 >---------------------------------------------------\n");
-  output->concatf("RESET Pin:   %c\n", _RESET_PIN);
-  output->concatf("IRQ Pin:     %c\n", _IRQ_PIN);
-  output->concatf("isr_fired:   %c\n", isr_fired ? 'y' : 'n');
+void SX1503::printDebug() {
+  Serial.print("---< SX1503 >---------------------------------------------------\n");
+  Serial.print("RESET Pin:   ");
+  Serial.println(_RESET_PIN, DEC);
+  Serial.print("IRQ Pin:     ");
+  Serial.println(_IRQ_PIN, DEC);
+  Serial.print("isr_fired:   ");
+  Serial.println(isr_fired ? 'y' : 'n');
 }
 
 
-void SX1503::printRegs(StringBuilder* output) {
+void SX1503::printRegs() {
   for (uint8_t i = 0; i < sizeof(registers); i++) {
-    output->concatf("\t%u: 0x%02x\n", i, registers[i]);
+    Serial.print("\t0x");
+    Serial.print(SX1503_REG_ADDR[i], HEX);
+    Serial.print(":  0x");
+    Serial.println(registers[i], HEX);
   }
 }
 
@@ -91,16 +101,36 @@ int8_t SX1503::reset() {
     registers[i] = 0;
   }
   if (255 != _RESET_PIN) {
-    digitalWrite(_RESET_PIN, false);
+    ::digitalWrite(_RESET_PIN, 0);
     delay(1);   // Datasheet says 300ns.
-    digitalWrite(_RESET_PIN, true);
-    delay(8);   // Datasheet says 7ms.
+    ::digitalWrite(_RESET_PIN, 1);
+    if (255 != _IRQ_PIN) {
+      // Wait on the IRQ pin to go high.
+      uint32_t millis_abort = millis() + 15;
+      while ((millis() < millis_abort) && (::digitalRead(_IRQ_PIN) == LOW)) {}
+      if (::digitalRead(_IRQ_PIN) == HIGH) {
+        ret = 0;
+      }
+    }
+    else {
+      delay(15);   // Datasheet says chip comes back in 7ms.
+    }
+    if (0 == ret) {  ret = refresh();   }
   }
   else {
     // TODO: Steamroll the registers with the default values.
   }
-  // TODO: Wait on the IRQ pin to go high.
-  ret = _write_register(SX1503_REG_ADVANCED, 0x02);  // IRQ clears on data read.
+
+  // IRQ clears on data read.
+  if (0 == ret) {  ret = _write_register(SX1503_REG_ADVANCED, 0x02);   }
+  // Set all event sensitivities to both edges. We use our sole IRQ line to
+  //   read on ALL input changes. Even if the user hasn't asked for a callback
+  //   function as our API understands it. All user calls to digitalRead() will
+  //   be immediate and incur no I/O.
+  if (0 == ret) {  ret = _write_register(SX1503_REG_SENSE_H_B, 0xFF);  }
+  if (0 == ret) {  ret = _write_register(SX1503_REG_SENSE_H_A, 0xFF);  }
+  if (0 == ret) {  ret = _write_register(SX1503_REG_SENSE_L_B, 0xFF);  }
+  if (0 == ret) {  ret = _write_register(SX1503_REG_SENSE_L_A, 0xFF);  }
   return ret;
 }
 
@@ -119,7 +149,7 @@ int8_t SX1503::poll() {
           }
         }
       }
-      d = a ^ registers[SX1503_REG_DATA_B];
+      d = a ^ registers[SX1503_REG_DATA_A];
       if (d) {
         for (uint8_t i = 0; i < 8; i++) {
           if ((d >> i) & 1) {
@@ -129,40 +159,48 @@ int8_t SX1503::poll() {
       }
     }
   }
-  if (255 != _IRQ_PIN) {
-    isr_fired = !digitalRead(_IRQ_PIN);
-  }
+  isr_fired = (255 != _IRQ_PIN) ? !digitalRead(_IRQ_PIN) : true;
   return ret;
 }
 
 
 
 int8_t SX1503::_write_register(uint8_t reg, uint8_t val) {
-  int8_t return_value = -1;
+  int8_t ret = -1;
   // No special safety measures are needed here.
-  Wire.beginTransmission(SX1503_I2C_ADDR);
-  Wire.write(reg);
+  Wire.beginTransmission((uint8_t) SX1503_I2C_ADDR);
+  Wire.write(SX1503_REG_ADDR[reg]);
   Wire.write(val);
-  Wire.endTransmission();
-  _set_shadow_value(reg, val);
-  return_value = 0;
-  return return_value;
+  ret = Wire.endTransmission();
+  if (0 == ret) {
+    registers[reg] = val;
+  }
+  return ret;
 }
 
 
 int8_t SX1503::_read_register(uint8_t reg, uint8_t len) {
-  int8_t return_value = 0;
-  Wire.beginTransmission(SX1503_I2C_ADDR);
-  Wire.send(reg);
-  Wire.endTransmission(false);
-  Wire.requestFrom(SX1503_I2C_ADDR, len);
-  for (uint8_t i = 0; i < len; i++) {
-    _set_shadow_value(reg + i, Wire.receive());
+  int8_t ret = -1;
+  Wire.beginTransmission((uint8_t) SX1503_I2C_ADDR);
+  Wire.send(SX1503_REG_ADDR[reg]);
+  ret = (int8_t) Wire.endTransmission(false);
+  if (0 == ret) {
+    Wire.requestFrom((uint8_t) SX1503_I2C_ADDR, len);
+    for (uint8_t i = 0; i < len; i++) {
+      registers[reg + i] = Wire.receive();
+    }
+    ret = Wire.endTransmission();
   }
-  Wire.endTransmission();
-  return return_value;
+  return ret;
 }
 
+
+int8_t SX1503::refresh() {
+  int8_t ret = _read_register(SX1503_REG_DATA_B, 0x12);
+  if (0 == ret) {  ret = _read_register(SX1503_REG_PLD_MODE_B, 0x0C);  }
+  if (0 == ret) {  ret = _read_register(SX1503_REG_ADVANCED, 1);  }
+  return ret;
+}
 
 
 /*
@@ -170,8 +208,8 @@ int8_t SX1503::_read_register(uint8_t reg, uint8_t len) {
 */
 int8_t SX1503::_ll_pin_init() {
   if (255 != _IRQ_PIN) {
-    pinMode(_IRQ_PIN, INPUT);
-    attachInterrupt(digitalPinToInterrupt(_IRQ_PIN), SX1503_isr, FALLING);
+    pinMode(_IRQ_PIN, INPUT_PULLUP);
+    ::attachInterrupt(digitalPinToInterrupt(_IRQ_PIN), sx1503_isr, FALLING);
   }
   if (255 != _RESET_PIN) {
     pinMode(_RESET_PIN, OUTPUT);
@@ -208,9 +246,8 @@ int8_t SX1503::detachInterrupt(uint8_t pin) {
 * Returns the number of interrupts removed.
 */
 int8_t SX1503::detachInterrupt(SX1503Callback cb) {
-  pin &= 0x0F;
   int8_t ret = 0;
-  for (uint8_t i = 0; i < sizeof(callbacks); i++) {
+  for (uint8_t i = 0; i < 16; i++) {
     if (cb == callbacks[i]) {
       callbacks[i] = nullptr;
       priorities[i] = 0;
@@ -232,26 +269,17 @@ int8_t SX1503::_invoke_pin_callback(uint8_t pin, bool value) {
 }
 
 
-void SX1503::_set_shadow_value(uint8_t reg, uint8_t val) {
-  if (reg < 31) {  registers[reg] = val;   }
-}
-
-uint8_t SX1503::_get_shadow_value(uint8_t reg) {
-  return (reg < 31) ? registers[reg] : 0;
-}
-
-
 /*
 */
-uint8_t SX1503::digitalWrite(uint8_t pin, uint8_t value) {
-  uint8_t ret = -2;
+int8_t SX1503::digitalWrite(uint8_t pin, uint8_t value) {
+  int8_t ret = -2;
   if (pin < 16) {
     ret = 0;
     uint8_t reg0 = (pin < 8) ? SX1503_REG_DATA_A : SX1503_REG_DATA_B;
     uint8_t val0 = (pin < 8) ? registers[SX1503_REG_DATA_A] : registers[SX1503_REG_DATA_B];
     pin = pin & 0x07; // Restrict to 8-bits.
     uint8_t f = 1 << pin;
-    val0 = (value) ? (val0 |= f) : (val0 &= ~f);
+    val0 = (0 != value) ? (val0 | f) : (val0 & ~f);
     if ((0 == ret) & (registers[reg0] != val0)) {  ret = _write_register(reg0, val0);   }
   }
   return ret;
@@ -266,7 +294,7 @@ uint8_t SX1503::digitalRead(uint8_t pin) {
     ret = (registers[SX1503_REG_DATA_A] >> pin) & 0x01;
   }
   else if (pin < 16) {
-    ret = (registers[SX1503_REG_DATA_B] >> pin) & 0x01;
+    ret = (registers[SX1503_REG_DATA_B] >> (pin & 0x07)) & 0x01;
   }
   return ret;
 }
@@ -306,18 +334,18 @@ int8_t SX1503::gpioMode(uint8_t pin, int mode) {
     uint8_t reg1 = (pin < 8) ? SX1503_REG_PULLUP_A : SX1503_REG_PULLUP_B;
     uint8_t reg2 = (pin < 8) ? SX1503_REG_PULLDOWN_A : SX1503_REG_PULLDOWN_B;
     uint8_t reg3 = (pin < 8) ? SX1503_REG_IRQ_MASK_A : SX1503_REG_IRQ_MASK_B;
-    uint8_t val0 = (pin < 8) ? registers[SX1503_REG_DIR_A] : registers[SX1503_REG_DIR_B];
-    uint8_t val1 = (pin < 8) ? registers[SX1503_REG_PULLUP_A] : registers[SX1503_REG_PULLUP_B];
-    uint8_t val2 = (pin < 8) ? registers[SX1503_REG_PULLDOWN_A] : registers[SX1503_REG_PULLDOWN_B];
-    uint8_t val3 = (pin < 8) ? registers[SX1503_REG_IRQ_MASK_A] : registers[SX1503_REG_IRQ_MASK_B];
+    uint8_t val0 = registers[reg0];
+    uint8_t val1 = registers[reg1];
+    uint8_t val2 = registers[reg2];
+    uint8_t val3 = registers[reg3];
     pin = pin & 0x07; // Restrict to 8-bits.
     uint8_t f = 1 << pin;
 
     // Pin being set as an input means we need to unmask the interrupt.
-    val0 = (in) ? (val0 |= f) : (val0 &= ~f);
-    val1 = (pu) ? (val1 |= f) : (val1 &= ~f);
-    val2 = (pd) ? (val2 |= f) : (val2 &= ~f);
-    val3 = (in) ? (val3 &= ~f) : (val3 |= f);
+    val0 = (in) ? (val0 | f) : (val0 & ~f);
+    val1 = (pu) ? (val1 | f) : (val1 & ~f);
+    val2 = (pd) ? (val2 | f) : (val2 & ~f);
+    val3 = (in) ? (val3 & ~f) : (val3 | f);
 
     if ((0 == ret) & (registers[reg0] != val0)) {  ret = _write_register(reg0, val0);   }
     if ((0 == ret) & (registers[reg1] != val1)) {  ret = _write_register(reg1, val1);   }
