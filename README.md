@@ -80,7 +80,8 @@ If done by construction, the configuration will be written to the class immediat
 and to the hardware during `init()`.
 
 Invocation of `unserialize()` will immediately result in I/O as the new
-configuration is imparted.
+configuration is imparted, but the fields (if any) that are otherwise required for
+construction will be ignored.
 
 ------------------------
 
