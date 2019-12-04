@@ -5,12 +5,25 @@
 #define __SX1503_DRIVER_H__
 
 #include <Arduino.h>
+#include <Wire.h>
 
 
-#define SX1503_SERIALIZE_VERSION  0x01  // Version code for serialized states.
 #define SX1503_I2C_ADDR           0x20  // Not configurable.
+#define SX1503_SERIALIZE_VERSION  0x01  // Version code for serialized states.
+#define SX1503_SERIALIZE_SIZE       36
+
+
+/* Class flags. */
+#define SX1503_FLAG_PRESERVE_STATE   0x0001
+#define SX1503_FLAG_PINS_CONFD       0x2000
+#define SX1503_FLAG_INITIALIZED      0x4000
+#define SX1503_FLAG_FROM_BLOB        0x8000
+
+#define SX1503_FLAG_SERIAL_MASK      0x000F  // Only these bits are serialized.
+
 
 /* These are the i2c register indicies. NOT their addresses. */
+// TODO: Convert to enum so confusion doesn't happen.
 #define SX1503_REG_DATA_B         0x00  //
 #define SX1503_REG_DATA_A         0x01  //
 #define SX1503_REG_DIR_B          0x02  //
@@ -64,10 +77,11 @@ typedef void (*SX1503Callback)(uint8_t pin, uint8_t level);
 class SX1503 {
   public:
     SX1503(const uint8_t irq_pin, const uint8_t reset_pin);
+    SX1503(const uint8_t* buf, const unsigned int len);  // Takes serialized state as args.
     ~SX1503();
 
-    int8_t init();
-    int8_t init(uint8_t* buffer, uint8_t len);  // Takes serialized state as argument.
+    inline int8_t init() {  return init(_bus);  };
+    int8_t init(TwoWire*);
     int8_t reset();
     int8_t poll();
     bool isrFired();
@@ -88,7 +102,16 @@ class SX1503 {
     int8_t  useBoost(bool enable);
 
     // No NVM on this part, so these fxns help do init in a single step.
-    uint8_t serializeSettings(uint8_t* buffer);
+    uint8_t serialize(uint8_t* buf, unsigned int len);
+    int8_t  unserialize(const uint8_t* buf, const unsigned int len);
+
+    inline bool initialized() {  return _sx_flag(SX1503_FLAG_INITIALIZED);  };
+    inline bool preserveOnDestroy() {
+      return _sx_flag(SX1503_FLAG_PRESERVE_STATE);
+    };
+    inline void preserveOnDestroy(bool x) {
+      _sx_set_flag(SX1503_FLAG_PRESERVE_STATE, x);
+    };
 
     // Debugging fxns...
     void printDebug();
@@ -99,6 +122,7 @@ class SX1503 {
     const uint8_t  _IRQ_PIN;
     const uint8_t  _RESET_PIN;
     uint16_t       _flags = 0;
+    TwoWire*       _bus   = nullptr;
     uint8_t        priorities[16];
     SX1503Callback callbacks[16];
     uint8_t        registers[31];
@@ -106,8 +130,21 @@ class SX1503 {
     int8_t _invoke_pin_callback(uint8_t pin, bool value);
 
     int8_t  _write_register(uint8_t reg, uint8_t val);
+    int8_t  _write_register(uint8_t reg, uint8_t* buf, uint8_t len);
     int8_t  _read_register(uint8_t reg, uint8_t len);
     int8_t  _ll_pin_init();
+
+    inline bool _from_blob() {   return _sx_flag(SX1503_FLAG_FROM_BLOB); };
+
+    /* Flag manipulation inlines */
+    inline uint16_t _sx_flags() {                return _flags;           };
+    inline bool _sx_flag(uint16_t _flag) {       return (_flags & _flag); };
+    inline void _sx_clear_flag(uint16_t _flag) { _flags &= ~_flag;        };
+    inline void _sx_set_flag(uint16_t _flag) {   _flags |= _flag;         };
+    inline void _sx_set_flag(uint16_t _flag, bool nu) {
+      if (nu) _flags |= _flag;
+      else    _flags &= ~_flag;
+    };
 };
 
 #endif   // __SX1503_DRIVER_H__

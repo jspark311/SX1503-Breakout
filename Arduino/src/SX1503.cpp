@@ -2,7 +2,7 @@
 */
 
 #include "SX1503.h"
-#include <Wire.h>
+
 
 /*******************************************************************************
 *      _______.___________.    ___   .___________. __    ______     _______.
@@ -45,6 +45,9 @@ void sx1503_isr() {
 * Constructors/destructors, class initialization functions and so-forth...
 *******************************************************************************/
 
+/*
+* Constructor.
+*/
 SX1503::SX1503(const uint8_t irq_pin, const uint8_t reset_pin) : _IRQ_PIN(irq_pin), _RESET_PIN(reset_pin) {
   for (uint8_t i = 0; i < sizeof(registers); i++) {
     registers[i] = 0;
@@ -55,8 +58,23 @@ SX1503::SX1503(const uint8_t irq_pin, const uint8_t reset_pin) : _IRQ_PIN(irq_pi
   }
 }
 
+/*
+* Constructor.
+*/
+SX1503::SX1503(const uint8_t* buf, const unsigned int len) : SX1503(*(buf + 1), *(buf + 2)) {
+  unserialize(buf, len);
+}
 
+/*
+* Destructor.
+*/
 SX1503::~SX1503() {
+  if (255 != _IRQ_PIN) {
+    ::detachInterrupt(digitalPinToInterrupt(_IRQ_PIN));
+  }
+  if (!preserveOnDestroy() && (255 != _RESET_PIN)) {
+    digitalWrite(_RESET_PIN, LOW);  // Leave the part in reset state.
+  }
 }
 
 
@@ -65,33 +83,40 @@ bool SX1503::isrFired() {
 }
 
 
-/*
-* Dump this item to the dev log.
-*/
-void SX1503::printDebug() {
-  Serial.print("---< SX1503 >---------------------------------------------------\n");
-  Serial.print("RESET Pin:   ");
-  Serial.println(_RESET_PIN, DEC);
-  Serial.print("IRQ Pin:     ");
-  Serial.println(_IRQ_PIN, DEC);
-  Serial.print("isr_fired:   ");
-  Serial.println(isr_fired ? 'y' : 'n');
-}
-
-
-void SX1503::printRegs() {
-  for (uint8_t i = 0; i < sizeof(registers); i++) {
-    Serial.print("\t0x");
-    Serial.print(SX1503_REG_ADDR[i], HEX);
-    Serial.print(":  0x");
-    Serial.println(registers[i], HEX);
+int8_t SX1503::init(TwoWire* b) {
+  int8_t ret = -1;
+  _sx_clear_flag(SX1503_FLAG_INITIALIZED);
+  if (!_sx_flag(SX1503_FLAG_PINS_CONFD)) {
+    _ll_pin_init();
   }
-}
+  if (nullptr != b) {
+    _bus = b;
+  }
 
+  if (_from_blob()) {
+    // Copy the blob-imparted values and clear the flag so we don't do this again.
+    _sx_clear_flag(SX1503_FLAG_FROM_BLOB);
+    uint8_t vals[31];
+    for (uint8_t i = 0; i < 31; i++) {  vals[i] = registers[i];  }
+    for (uint8_t i = 0; i < 31; i++) {
 
-int8_t SX1503::init() {
-  _ll_pin_init();
-  return reset();
+      int8_t ret = _write_register(SX1503_REG_DATA_B, &vals[0], 0x12);
+      if (0 == ret) {  ret = _write_register(SX1503_REG_PLD_MODE_B, &vals[SX1503_REG_PLD_MODE_B], 0x0C);  }
+      if (0 == ret) {  ret = _write_register(SX1503_REG_ADVANCED, &vals[SX1503_REG_ADVANCED], 1);  }
+      if (0 != ret) {
+        return -3;
+      }
+    }
+    ret = 0;
+  }
+  else if (!preserveOnDestroy()) {
+    ret = reset();
+  }
+  else {
+    ret = refresh();
+  }
+  _sx_set_flag(SX1503_FLAG_INITIALIZED, (0 == ret));
+  return ret;
 }
 
 
@@ -164,57 +189,11 @@ int8_t SX1503::poll() {
 }
 
 
-
-int8_t SX1503::_write_register(uint8_t reg, uint8_t val) {
-  int8_t ret = -1;
-  // No special safety measures are needed here.
-  Wire.beginTransmission((uint8_t) SX1503_I2C_ADDR);
-  Wire.write(SX1503_REG_ADDR[reg]);
-  Wire.write(val);
-  ret = Wire.endTransmission();
-  if (0 == ret) {
-    registers[reg] = val;
-  }
-  return ret;
-}
-
-
-int8_t SX1503::_read_register(uint8_t reg, uint8_t len) {
-  int8_t ret = -1;
-  Wire.beginTransmission((uint8_t) SX1503_I2C_ADDR);
-  Wire.send(SX1503_REG_ADDR[reg]);
-  ret = (int8_t) Wire.endTransmission(false);
-  if (0 == ret) {
-    Wire.requestFrom((uint8_t) SX1503_I2C_ADDR, len);
-    for (uint8_t i = 0; i < len; i++) {
-      registers[reg + i] = Wire.receive();
-    }
-    ret = Wire.endTransmission();
-  }
-  return ret;
-}
-
-
 int8_t SX1503::refresh() {
   int8_t ret = _read_register(SX1503_REG_DATA_B, 0x12);
   if (0 == ret) {  ret = _read_register(SX1503_REG_PLD_MODE_B, 0x0C);  }
   if (0 == ret) {  ret = _read_register(SX1503_REG_ADVANCED, 1);  }
   return ret;
-}
-
-
-/*
-* Setup the low-level pin details.
-*/
-int8_t SX1503::_ll_pin_init() {
-  if (255 != _IRQ_PIN) {
-    pinMode(_IRQ_PIN, INPUT_PULLUP);
-    ::attachInterrupt(digitalPinToInterrupt(_IRQ_PIN), sx1503_isr, FALLING);
-  }
-  if (255 != _RESET_PIN) {
-    pinMode(_RESET_PIN, OUTPUT);
-  }
-  return 0;
 }
 
 
@@ -253,17 +232,6 @@ int8_t SX1503::detachInterrupt(SX1503Callback cb) {
       priorities[i] = 0;
       ret++;
     }
-  }
-  return ret;
-}
-
-
-int8_t SX1503::_invoke_pin_callback(uint8_t pin, bool value) {
-  int8_t ret = -1;
-  pin &= 0x0F;
-  if (nullptr != callbacks[pin]) {
-    callbacks[pin](pin, value?1:0);
-    ret = 0;
   }
   return ret;
 }
@@ -353,4 +321,191 @@ int8_t SX1503::gpioMode(uint8_t pin, int mode) {
     if ((0 == ret) & (registers[reg3] != val3)) {  ret = _write_register(reg3, val3);   }
   }
   return ret;
+}
+
+
+/*******************************************************************************
+* Hidden machinery
+*******************************************************************************/
+
+int8_t SX1503::_invoke_pin_callback(uint8_t pin, bool value) {
+  int8_t ret = -1;
+  pin &= 0x0F;
+  if (nullptr != callbacks[pin]) {
+    callbacks[pin](pin, value?1:0);
+    ret = 0;
+  }
+  return ret;
+}
+
+
+/*
+* Setup the low-level pin details.
+*/
+int8_t SX1503::_ll_pin_init() {
+  if (255 != _IRQ_PIN) {
+    pinMode(_IRQ_PIN, INPUT_PULLUP);
+    ::attachInterrupt(digitalPinToInterrupt(_IRQ_PIN), sx1503_isr, FALLING);
+  }
+  if (255 != _RESET_PIN) {
+    pinMode(_RESET_PIN, OUTPUT);
+  }
+  _sx_set_flag(SX1503_FLAG_PINS_CONFD);
+  return 0;
+}
+
+
+int8_t SX1503::_write_register(uint8_t reg, uint8_t val) {
+  int8_t ret = -1;
+  if (nullptr != _bus) {
+    // No special safety measures are needed here.
+    _bus->beginTransmission((uint8_t) SX1503_I2C_ADDR);
+    _bus->write(SX1503_REG_ADDR[reg]);
+    _bus->write(val);
+    ret = _bus->endTransmission();
+    if (0 == ret) {
+      registers[reg] = val;
+    }
+  }
+  return ret;
+}
+
+
+/*
+* This is basically only used to sync the class state back into the hardware.
+* Does not update the shadow.
+*/
+int8_t SX1503::_write_register(uint8_t reg, uint8_t* buf, uint8_t len) {
+  int8_t ret = -1;
+  if (nullptr != _bus) {
+  }
+  _bus->beginTransmission((uint8_t) SX1503_I2C_ADDR);
+  _bus->write(SX1503_REG_ADDR[reg]);
+  for (uint8_t i = 0; i < len; i++) {
+    _bus->write(*(buf + i));
+  }
+  ret = _bus->endTransmission();
+  return ret;
+}
+
+
+int8_t SX1503::_read_register(uint8_t reg, uint8_t len) {
+  int8_t ret = -1;
+  if (nullptr != _bus) {
+  }
+  _bus->beginTransmission((uint8_t) SX1503_I2C_ADDR);
+  _bus->send(SX1503_REG_ADDR[reg]);
+  ret = (int8_t) _bus->endTransmission(false);
+  if (0 == ret) {
+    _bus->requestFrom((uint8_t) SX1503_I2C_ADDR, len);
+    for (uint8_t i = 0; i < len; i++) {
+      registers[reg + i] = _bus->receive();
+    }
+    ret = _bus->endTransmission();
+  }
+  return ret;
+}
+
+
+/*******************************************************************************
+* Serialization fxns
+*******************************************************************************/
+
+/*
+* Stores everything about the class in the provided buffer in this format...
+*   Offset | Data
+*   -------|----------------------
+*   0      | Serializer version
+*   1      | IRQ pin
+*   2      | Reset pin
+*   3      | Flags MSB
+*   4      | Flags LSB
+*   5-35   | Full register set
+*
+* Returns the number of bytes written to the buffer.
+*/
+uint8_t SX1503::serialize(uint8_t* buf, unsigned int len) {
+  uint8_t offset = 0;
+  if (len >= SX1503_SERIALIZE_SIZE) {
+    if (_sx_flag(SX1503_FLAG_INITIALIZED)) {
+      uint16_t f = _flags & SX1503_FLAG_SERIAL_MASK;
+      *(buf + offset++) = SX1503_SERIALIZE_VERSION;
+      *(buf + offset++) = _IRQ_PIN;
+      *(buf + offset++) = _RESET_PIN;
+      *(buf + offset++) = (uint8_t) 0xFF & (f >> 8);
+      *(buf + offset++) = (uint8_t) 0xFF & f;
+      for (uint8_t i = 0; i < 31; i++) {
+        *(buf + offset++) = registers[i];
+      }
+    }
+  }
+  return offset;
+}
+
+
+int8_t SX1503::unserialize(const uint8_t* buf, const unsigned int len) {
+  uint8_t offset = 0;
+  uint8_t expected_sz = 255;
+  if (len >= SX1503_SERIALIZE_SIZE) {
+    uint16_t f = 0;
+    uint8_t vals[31];
+    switch (*(buf + offset++)) {
+      case SX1503_SERIALIZE_VERSION:
+        expected_sz = SX1503_SERIALIZE_SIZE;
+        f = (*(buf + 3) << 8) | *(buf + 4);
+        _flags = (_flags & ~SX1503_FLAG_SERIAL_MASK) | (f & SX1503_FLAG_SERIAL_MASK);
+        offset += 4;  // Skip to the register offset.
+        for (uint8_t i = 0; i < 31; i++) {
+          vals[i] = *(buf + offset++);
+        }
+        break;
+      default:  // Unhandled serializer version.
+        return -1;
+    }
+    if (_sx_flag(SX1503_FLAG_INITIALIZED)) {
+      // If the device has already been initialized, we impart the new conf.
+      int8_t ret = _write_register(SX1503_REG_DATA_B, &vals[0], 0x12);
+      if (0 == ret) {  ret = _write_register(SX1503_REG_PLD_MODE_B, &vals[SX1503_REG_PLD_MODE_B], 0x0C);  }
+      if (0 == ret) {  ret = _write_register(SX1503_REG_ADVANCED, &vals[SX1503_REG_ADVANCED], 1);  }
+    }
+    else {
+      _sx_set_flag(SX1503_FLAG_FROM_BLOB);
+      for (uint8_t i = 0; i < 31; i++) {
+        registers[i] = vals[i];   // Save state for init()
+      }
+    }
+  }
+  return (expected_sz == offset) ? 0 : -1;
+}
+
+
+/*******************************************************************************
+* Debugging fxns
+*******************************************************************************/
+/*
+*/
+void SX1503::printDebug() {
+  Serial.print("---< SX1503 >---------------------------------------------------\n");
+  Serial.print("RESET Pin:   ");
+  Serial.println(_RESET_PIN, DEC);
+  Serial.print("IRQ Pin:     ");
+  Serial.println(_IRQ_PIN, DEC);
+  Serial.print("isr_fired:   ");
+  Serial.println(isr_fired ? 'y' : 'n');
+  Serial.print("Initialized: ");
+  Serial.println(initialized() ? 'y' : 'n');
+  Serial.print("Preserve:    ");
+  Serial.println(preserveOnDestroy() ? 'y' : 'n');
+}
+
+
+/*
+*/
+void SX1503::printRegs() {
+  for (uint8_t i = 0; i < sizeof(registers); i++) {
+    Serial.print("\t0x");
+    Serial.print(SX1503_REG_ADDR[i], HEX);
+    Serial.print(":  0x");
+    Serial.println(registers[i], HEX);
+  }
 }
