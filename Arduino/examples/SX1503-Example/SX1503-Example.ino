@@ -5,8 +5,8 @@
 * Pin definitions and hardware constants.
 *******************************************************************************/
 #define LED0_PIN          13
-#define SX1503_IRQ_PIN    14
-#define SX1503_RESET_PIN  15
+#define SX1503_IRQ_PIN    14  // Optional. Use 255 to inform driver of absence.
+#define SX1503_RESET_PIN  15  // Optional. Use 255 to inform driver of absence.
 #define SDA_PIN           18
 #define SCL_PIN           19
 
