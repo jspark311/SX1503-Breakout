@@ -209,8 +209,9 @@ void loop() {
           uint8_t written = sx1503.serialize(buf, SX1503_SERIALIZE_SIZE);
           if (SX1503_SERIALIZE_SIZE == written) {
             for (unsigned int i = 0; i < SX1503_SERIALIZE_SIZE; i++) {
+              Serial.print((buf[i] > 0x0F) ? "0x" : "0x0");
               Serial.print(buf[i], HEX);
-              Serial.print(((i+1) % 16) ? " " : "\n");
+              Serial.print(((i+1) % 12) ? " " : "\n");
             }
             Serial.println();
           }
