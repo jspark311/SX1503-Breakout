@@ -73,7 +73,7 @@ SX1503::~SX1503() {
     ::detachInterrupt(digitalPinToInterrupt(_IRQ_PIN));
   }
   if (!preserveOnDestroy() && (255 != _RESET_PIN)) {
-    digitalWrite(_RESET_PIN, LOW);  // Leave the part in reset state.
+    ::digitalWrite(_RESET_PIN, LOW);  // Leave the part in reset state.
   }
 }
 
@@ -184,7 +184,7 @@ int8_t SX1503::poll() {
       }
     }
   }
-  isr_fired = (255 != _IRQ_PIN) ? !digitalRead(_IRQ_PIN) : true;
+  isr_fired = (255 != _IRQ_PIN) ? !::digitalRead(_IRQ_PIN) : true;
   return ret;
 }
 
